@@ -1,0 +1,704 @@
+// prisma/schema.prisma
+// GLP-1 Care Pro — Schema do banco de dados
+// Conformidade: LGPD, CFM, CFF
+// Atenção: dados de saúde são sensíveis — nunca exponha em logs ou respostas de erro
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────────────────────────
+// ENUMERAÇÕES
+// ─────────────────────────────────────────────
+
+/// Perfis de acesso na plataforma
+enum Role {
+  DOCTOR
+  NUTRITIONIST
+  PATIENT
+}
+
+/// Status de verificação de credenciais profissionais (CRM / CFN)
+enum VerificationStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+/// Sexo biológico — usado para cálculos clínicos (TMB, ajuste de dose)
+enum BiologicalSex {
+  MALE
+  FEMALE
+  INTERSEX
+}
+
+/// Status do vínculo clínico entre médico, paciente e nutricionista
+enum ClinicalTeamStatus {
+  ACTIVE
+  INACTIVE
+}
+
+/// Medicamentos agonistas GLP-1 suportados pela plataforma
+enum Medication {
+  /// Semaglutida — Ozempic / Wegovy
+  SEMAGLUTIDE
+  /// Tirzepatida — Mounjaro
+  TIRZEPATIDE
+  /// Liraglutida — Saxenda / Victoza
+  LIRAGLUTIDE
+  /// Outros agonistas GLP-1 não listados
+  OTHER
+}
+
+/// Status do tratamento em curso
+enum TreatmentStatus {
+  ACTIVE
+  PAUSED
+  COMPLETED
+  ABANDONED
+}
+
+/// Sítios de aplicação da injeção subcutânea
+enum InjectionSite {
+  ABDOMEN
+  THIGH
+  ARM
+}
+
+/// Tipo de biométrica registrada
+enum BiometricType {
+  WEIGHT
+  GLUCOSE
+  BLOOD_PRESSURE
+  HEART_RATE
+  WAIST_CIRCUMFERENCE
+}
+
+/// Origem do dado biométrico
+enum BiometricSource {
+  MANUAL
+  DEVICE
+  APPLE_HEALTH
+  GOOGLE_FIT
+}
+
+/// Gravidade do alerta clínico
+enum AlertSeverity {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+/// Tipo de consulta
+enum AppointmentType {
+  INITIAL
+  RETURN
+  URGENCY
+}
+
+/// Status da consulta
+enum AppointmentStatus {
+  SCHEDULED
+  CONFIRMED
+  COMPLETED
+  CANCELLED
+  NO_SHOW
+}
+
+/// Fase do plano nutricional (adaptação / manutenção / consolidação)
+enum NutritionalPhase {
+  PHASE_1 // Adaptação — semanas 1-4
+  PHASE_2 // Transição — semanas 5-12
+  PHASE_3 // Manutenção — semanas 13+
+}
+
+/// Status do plano nutricional
+enum NutritionalPlanStatus {
+  ACTIVE
+  EXPIRED
+  SUPERSEDED
+}
+
+/// Tipo de refeição para registro alimentar
+enum MealType {
+  BREAKFAST
+  LUNCH
+  DINNER
+  SNACK
+  SUPPER
+}
+
+/// Tipo de mensagem na comunicação criptografada
+enum MessageType {
+  TEXT
+  AUDIO
+  DOCUMENT
+  IMAGE
+}
+
+// ─────────────────────────────────────────────
+// USUÁRIOS E AUTENTICAÇÃO
+// ─────────────────────────────────────────────
+
+/// Usuário base — identidade e autenticação
+/// Dados mínimos nesta tabela; dados sensíveis ficam nos perfis específicos
+model User {
+  id        String    @id @default(cuid())
+  email     String    @unique
+  /// Telefone usado para MFA (obrigatório para médicos e nutricionistas)
+  phone     String?
+  role      Role
+  /// Hash da senha — nunca armazenar em texto claro
+  passwordHash String
+  /// Segredo TOTP para MFA — criptografado em repouso
+  mfaSecret    String?
+  mfaEnabled   Boolean @default(false)
+  /// Soft delete — LGPD: dados retidos por obrigação legal (5 anos CFM)
+  deletedAt DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  // Perfis específicos por papel
+  doctorProfile       DoctorProfile?
+  nutritionistProfile NutritionistProfile?
+  patientProfile      PatientProfile?
+
+  // Comunicação
+  sentMessages     Message[] @relation("SentMessages")
+  receivedMessages Message[] @relation("ReceivedMessages")
+
+  // Auditoria
+  auditLogs AuditLog[]
+
+  // Sessões ativas
+  sessions UserSession[]
+
+  @@index([email])
+  @@index([role])
+  @@index([deletedAt])
+  @@map("users")
+}
+
+/// Sessões autenticadas — controle de tokens e revogação
+model UserSession {
+  id           String   @id @default(cuid())
+  userId       String
+  /// Token de sessão — armazenado como hash (SHA-256)
+  tokenHash    String   @unique
+  ipAddress    String
+  userAgent    String
+  expiresAt    DateTime
+  revokedAt    DateTime?
+  createdAt    DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([tokenHash])
+  @@index([expiresAt])
+  @@map("user_sessions")
+}
+
+// ─────────────────────────────────────────────
+// PERFIS PROFISSIONAIS E DE PACIENTE
+// ─────────────────────────────────────────────
+
+/// Perfil do médico — verificação de CRM obrigatória antes de acesso clínico
+model DoctorProfile {
+  id                 String             @id @default(cuid())
+  userId             String             @unique
+  /// CRM sem formatação (apenas dígitos)
+  crm                String
+  /// Estado de registro no CRM (ex: "SP", "RJ")
+  crmState           String             @db.Char(2)
+  specialty          String
+  /// Data da verificação pelo time de compliance
+  verifiedAt         DateTime?
+  verificationStatus VerificationStatus @default(PENDING)
+  bio                String?
+  avatarUrl          String?
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Relacionamentos clínicos
+  clinicalTeams       ClinicalTeam[]
+  treatments          Treatment[]
+  appointments        Appointment[]
+  consultationRecords ConsultationRecord[]
+  clinicalAlerts      ClinicalAlert[]
+
+  @@unique([crm, crmState])
+  @@index([verificationStatus])
+  @@map("doctor_profiles")
+}
+
+/// Perfil do nutricionista — verificação de CFN obrigatória
+model NutritionistProfile {
+  id         String    @id @default(cuid())
+  userId     String    @unique
+  /// CFN — Conselho Federal de Nutricionistas
+  cfn        String    @unique
+  specialty  String
+  verifiedAt DateTime?
+  bio        String?
+  avatarUrl  String?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Relacionamentos clínicos
+  clinicalTeams    ClinicalTeam[]
+  nutritionalPlans NutritionalPlan[]
+
+  @@map("nutritionist_profiles")
+}
+
+/// Perfil do paciente — dados sensíveis de saúde com consentimento LGPD
+model PatientProfile {
+  id               String       @id @default(cuid())
+  userId           String       @unique
+  dateOfBirth      DateTime     @db.Date
+  biologicalSex    BiologicalSex
+  /// Altura em centímetros
+  heightCm         Float?
+  /// Contato de emergência — JSON: { nome, telefone, parentesco }
+  emergencyContact Json?
+  /// Data e hora do aceite explícito dos termos LGPD
+  /// Obrigatório antes de qualquer dado clínico ser coletado
+  lgpdConsentAt    DateTime?
+  /// Versão dos termos aceitos (para rastreabilidade)
+  lgpdConsentVersion String?
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Relacionamentos clínicos
+  clinicalTeams       ClinicalTeam[]
+  treatments          Treatment[]
+  weeklyCheckins      WeeklyCheckin[]
+  biometricLogs       BiometricLog[]
+  clinicalAlerts      ClinicalAlert[]
+  appointments        Appointment[]
+  consultationRecords ConsultationRecord[]
+  nutritionalPlans    NutritionalPlan[]
+  mealLogs            MealLog[]
+
+  @@map("patient_profiles")
+}
+
+// ─────────────────────────────────────────────
+// RELACIONAMENTOS CLÍNICOS
+// ─────────────────────────────────────────────
+
+/// Vínculo clínico entre médico, paciente e (opcionalmente) nutricionista
+/// Controla as permissões de acesso aos dados do paciente
+model ClinicalTeam {
+  id               String            @id @default(cuid())
+  doctorProfileId  String
+  patientProfileId String
+  /// Nutricionista é opcional — nem todo paciente tem acompanhamento nutricional
+  nutritionistProfileId String?
+  status           ClinicalTeamStatus @default(ACTIVE)
+  linkedAt         DateTime          @default(now())
+  unlinkedAt       DateTime?
+  /// Motivo do encerramento do vínculo
+  unlinkReason     String?
+
+  doctorProfile       DoctorProfile        @relation(fields: [doctorProfileId], references: [id])
+  patientProfile      PatientProfile       @relation(fields: [patientProfileId], references: [id])
+  nutritionistProfile NutritionistProfile? @relation(fields: [nutritionistProfileId], references: [id])
+
+  @@unique([doctorProfileId, patientProfileId])
+  @@index([patientProfileId])
+  @@index([status])
+  @@map("clinical_teams")
+}
+
+// ─────────────────────────────────────────────
+// TRATAMENTO GLP-1
+// ─────────────────────────────────────────────
+
+/// Tratamento principal — prescrição e protocolo de escalada de dose
+model Treatment {
+  id              String          @id @default(cuid())
+  patientProfileId String
+  doctorProfileId  String
+  medication      Medication
+  /// Dose atual em uso (mg ou mcg conforme o medicamento)
+  currentDose     Float
+  unit            String          @default("mg")
+  startDate       DateTime        @db.Date
+  endDate         DateTime?       @db.Date
+  /// Protocolo clínico completo em JSON — inclui cronograma, metas e critérios
+  protocol        Json
+  status          TreatmentStatus @default(ACTIVE)
+  /// Motivo de pausa ou abandono
+  statusReason    String?
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  patientProfile PatientProfile @relation(fields: [patientProfileId], references: [id])
+  doctorProfile  DoctorProfile  @relation(fields: [doctorProfileId], references: [id])
+
+  doseLogs      DoseLog[]
+  doseProtocols DoseProtocol[]
+
+  @@index([patientProfileId])
+  @@index([status])
+  @@map("treatments")
+}
+
+/// Registro de cada aplicação de dose
+model DoseLog {
+  id            String        @id @default(cuid())
+  treatmentId   String
+  scheduledDate DateTime      @db.Date
+  /// Data/hora real da aplicação (null se não confirmada)
+  appliedAt     DateTime?
+  site          InjectionSite?
+  confirmed     Boolean       @default(false)
+  /// Motivo de pulo da dose (ex: "náusea intensa", "viagem")
+  skipReason    String?
+  /// Notas adicionais do paciente
+  notes         String?
+  createdAt     DateTime      @default(now())
+
+  treatment Treatment @relation(fields: [treatmentId], references: [id])
+
+  @@index([treatmentId])
+  @@index([scheduledDate])
+  @@map("dose_logs")
+}
+
+/// Protocolo de escalada de dose semana a semana
+model DoseProtocol {
+  id                  String   @id @default(cuid())
+  treatmentId         String
+  weekNumber          Int
+  /// Dose prescrita para esta semana
+  dose                Float
+  unit                String   @default("mg")
+  /// Critérios para avançar ou recuar na escalada (JSON)
+  /// Ex: { "nauseaThreshold": 7, "weightLossMin": 0.5 }
+  escalationCriteria  Json?
+  createdAt           DateTime @default(now())
+
+  treatment Treatment @relation(fields: [treatmentId], references: [id])
+
+  @@unique([treatmentId, weekNumber])
+  @@map("dose_protocols")
+}
+
+// ─────────────────────────────────────────────
+// MONITORAMENTO
+// ─────────────────────────────────────────────
+
+/// Check-in semanal do paciente — avaliação de sintomas e bem-estar
+/// Escalas de 0 a 10: quanto maior, mais intenso o sintoma
+model WeeklyCheckin {
+  id                  String   @id @default(cuid())
+  patientProfileId    String
+  date                DateTime @db.Date
+  /// Peso em kg no momento do check-in
+  weightKg            Float?
+  /// Intensidade da náusea (0 = ausente, 10 = incapacitante)
+  nauseaScore         Int?     @db.SmallInt
+  /// Intensidade dos vômitos
+  vomitScore          Int?     @db.SmallInt
+  /// Intensidade da constipação
+  constipationScore   Int?     @db.SmallInt
+  /// Nível de fadiga
+  fatigueScore        Int?     @db.SmallInt
+  /// Nível de energia subjetivo
+  energyScore         Int?     @db.SmallInt
+  /// Nível de apetite (0 = sem apetite, 10 = muito apetite)
+  appetiteScore       Int?     @db.SmallInt
+  notes               String?
+  /// URL da foto (ex: foto de refeição ou progresso) — armazenada em bucket privado
+  photoUrl            String?
+  createdAt           DateTime @default(now())
+
+  patientProfile PatientProfile @relation(fields: [patientProfileId], references: [id])
+
+  @@unique([patientProfileId, date])
+  @@index([patientProfileId])
+  @@index([date])
+  @@map("weekly_checkins")
+}
+
+/// Log biométrico — medições diversas ao longo do tratamento
+model BiometricLog {
+  id               String          @id @default(cuid())
+  patientProfileId String
+  type             BiometricType
+  /// Valor numérico da medição
+  value            Float
+  /// Unidade da medição (kg, mg/dL, mmHg, bpm, cm)
+  unit             String
+  measuredAt       DateTime
+  source           BiometricSource @default(MANUAL)
+  /// ID do dispositivo de origem (quando aplicável)
+  deviceId         String?
+  notes            String?
+  createdAt        DateTime        @default(now())
+
+  patientProfile PatientProfile @relation(fields: [patientProfileId], references: [id])
+
+  @@index([patientProfileId])
+  @@index([type])
+  @@index([measuredAt])
+  @@map("biometric_logs")
+}
+
+/// Alerta clínico gerado por regra de negócio ou por profissional
+model ClinicalAlert {
+  id               String        @id @default(cuid())
+  patientProfileId String
+  doctorProfileId  String
+  type             String
+  severity         AlertSeverity
+  /// Mensagem do alerta — não deve conter dados sensíveis em texto claro
+  message          String
+  triggeredAt      DateTime      @default(now())
+  /// Data de ciência pelo médico
+  acknowledgedAt   DateTime?
+  resolvedAt       DateTime?
+  /// Ação tomada para resolução
+  resolutionNotes  String?
+
+  patientProfile PatientProfile @relation(fields: [patientProfileId], references: [id])
+  doctorProfile  DoctorProfile  @relation(fields: [doctorProfileId], references: [id])
+
+  @@index([patientProfileId])
+  @@index([severity])
+  @@index([resolvedAt])
+  @@map("clinical_alerts")
+}
+
+// ─────────────────────────────────────────────
+// CONSULTAS
+// ─────────────────────────────────────────────
+
+/// Agendamento de consulta
+model Appointment {
+  id               String            @id @default(cuid())
+  patientProfileId String
+  doctorProfileId  String
+  scheduledAt      DateTime
+  type             AppointmentType
+  status           AppointmentStatus @default(SCHEDULED)
+  notes            String?
+  /// Link da teleconsulta (quando aplicável) — armazenado criptografado
+  teleconsultUrl   String?
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+
+  patientProfile      PatientProfile       @relation(fields: [patientProfileId], references: [id])
+  doctorProfile       DoctorProfile        @relation(fields: [doctorProfileId], references: [id])
+  consultationRecord  ConsultationRecord?
+
+  @@index([patientProfileId])
+  @@index([doctorProfileId])
+  @@index([scheduledAt])
+  @@map("appointments")
+}
+
+/// Registro clínico da consulta — dados médicos confidenciais
+/// Acesso restrito ao médico responsável e paciente; auditado em cada acesso
+model ConsultationRecord {
+  id               String   @id @default(cuid())
+  appointmentId    String?  @unique
+  doctorProfileId  String
+  patientProfileId String
+  /// Peso aferido na consulta (kg)
+  weightKg         Float?
+  /// Pressão arterial — JSON: { "systolic": 120, "diastolic": 80 }
+  bloodPressure    Json?
+  /// Sintomas relatados — JSON array de sintomas
+  symptoms         Json     @default("[]")
+  /// Diagnósticos com CIDs — JSON: [{ "cid": "E11", "description": "..." }]
+  diagnosis        Json     @default("[]")
+  /// Alterações na prescrição — JSON detalhando mudanças de dose
+  prescriptionChanges Json?
+  /// Resultados de exames laboratoriais — JSON
+  labResults       Json?
+  nextAppointmentDate DateTime? @db.Date
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  appointment    Appointment?   @relation(fields: [appointmentId], references: [id])
+  doctorProfile  DoctorProfile  @relation(fields: [doctorProfileId], references: [id])
+  patientProfile PatientProfile @relation(fields: [patientProfileId], references: [id])
+
+  @@index([patientProfileId])
+  @@index([doctorProfileId])
+  @@map("consultation_records")
+}
+
+// ─────────────────────────────────────────────
+// NUTRIÇÃO
+// ─────────────────────────────────────────────
+
+/// Plano nutricional prescrito pelo nutricionista
+model NutritionalPlan {
+  id                   String               @id @default(cuid())
+  patientProfileId     String
+  nutritionistProfileId String
+  phase                NutritionalPhase
+  /// Meta calórica diária (kcal)
+  caloricGoalKcal      Int
+  /// Meta de proteína (g/dia)
+  proteinGoalG         Float
+  /// Meta de carboidratos (g/dia)
+  carbGoalG            Float
+  /// Meta de gordura (g/dia)
+  fatGoalG             Float
+  /// Restrições alimentares — JSON: ["gluten", "lactose"]
+  restrictions         Json                 @default("[]")
+  /// Orientações detalhadas em texto livre
+  guidelines           String?
+  validFrom            DateTime             @db.Date
+  validUntil           DateTime?            @db.Date
+  status               NutritionalPlanStatus @default(ACTIVE)
+  createdAt            DateTime             @default(now())
+  updatedAt            DateTime             @updatedAt
+
+  patientProfile      PatientProfile      @relation(fields: [patientProfileId], references: [id])
+  nutritionistProfile NutritionistProfile @relation(fields: [nutritionistProfileId], references: [id])
+
+  @@index([patientProfileId])
+  @@index([status])
+  @@map("nutritional_plans")
+}
+
+/// Registro de refeição — diário alimentar do paciente
+model MealLog {
+  id               String   @id @default(cuid())
+  patientProfileId String
+  mealType         MealType
+  description      String
+  /// URL da foto da refeição — bucket privado, acesso por URL assinada
+  photoUrl         String?
+  /// Calorias estimadas (opcional — pode ser calculado por IA)
+  caloriesKcal     Float?
+  proteinG         Float?
+  carbG            Float?
+  fatG             Float?
+  loggedAt         DateTime
+  createdAt        DateTime @default(now())
+
+  patientProfile PatientProfile @relation(fields: [patientProfileId], references: [id])
+
+  @@index([patientProfileId])
+  @@index([loggedAt])
+  @@map("meal_logs")
+}
+
+// ─────────────────────────────────────────────
+// COMUNICAÇÃO CRIPTOGRAFADA
+// ─────────────────────────────────────────────
+
+/// Conversa entre dois participantes (médico↔paciente ou nutricionista↔paciente)
+model Conversation {
+  id           String   @id @default(cuid())
+  /// Participante 1 (User.id)
+  participantAId String
+  /// Participante 2 (User.id)
+  participantBId String
+  /// Data da última mensagem — para ordenação da lista de conversas
+  lastMessageAt DateTime?
+  createdAt    DateTime @default(now())
+
+  messages Message[]
+
+  @@unique([participantAId, participantBId])
+  @@index([participantAId])
+  @@index([participantBId])
+  @@map("conversations")
+}
+
+/// Mensagem individual criptografada ponta a ponta
+/// O campo `content` nunca deve ser descriptografado no servidor
+/// A criptografia é feita no cliente com as chaves públicas dos participantes
+model Message {
+  id             String      @id @default(cuid())
+  senderId       String
+  receiverId     String
+  conversationId String
+  /// Conteúdo criptografado ponta a ponta (base64 do ciphertext)
+  content        String
+  type           MessageType @default(TEXT)
+  /// URL do arquivo (áudio/documento/imagem) — pré-assinada e expirada
+  fileUrl        String?
+  readAt         DateTime?
+  /// Mensagem deletada pelo remetente (soft delete)
+  deletedBySenderAt DateTime?
+  createdAt      DateTime    @default(now())
+
+  sender       User         @relation("SentMessages", fields: [senderId], references: [id])
+  receiver     User         @relation("ReceivedMessages", fields: [receiverId], references: [id])
+  conversation Conversation @relation(fields: [conversationId], references: [id])
+
+  @@index([conversationId])
+  @@index([senderId])
+  @@index([createdAt])
+  @@map("messages")
+}
+
+// ─────────────────────────────────────────────
+// AUDITORIA — LGPD
+// ─────────────────────────────────────────────
+
+/// Log de auditoria imutável — registra toda ação sobre dados sensíveis
+/// Retenção mínima: 5 anos (Resolução CFM 1821/2007)
+/// Esta tabela NÃO deve ter UPDATE ou DELETE — apenas INSERT
+model AuditLog {
+  id         String   @id @default(cuid())
+  /// Usuário que executou a ação (null = sistema/automação)
+  userId     String?
+  action     String   // ex: "READ", "CREATE", "UPDATE", "DELETE", "EXPORT", "LOGIN"
+  resource   String   // ex: "ConsultationRecord", "PatientProfile", "Treatment"
+  resourceId String?
+  /// IP de origem — anonimizado conforme LGPD se necessário
+  ipAddress  String?
+  userAgent  String?
+  /// Contexto adicional da ação — nunca incluir dados de saúde aqui
+  metadata   Json?
+  createdAt  DateTime @default(now())
+
+  user User? @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@index([resource, resourceId])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
+
+/// Registro de consentimentos LGPD — histórico completo de aceites e revogações
+model LgpdConsent {
+  id              String   @id @default(cuid())
+  /// User.id do titular dos dados
+  userId          String
+  /// Versão do documento de termos aceito
+  consentVersion  String
+  /// Finalidade do tratamento de dados consentida
+  purpose         String
+  accepted        Boolean
+  /// IP do aceite — para comprovação legal
+  ipAddress       String?
+  acceptedAt      DateTime @default(now())
+
+  @@index([userId])
+  @@index([acceptedAt])
+  @@map("lgpd_consents")
+}

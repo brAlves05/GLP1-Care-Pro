@@ -1,0 +1,28 @@
+# Dependências
+node_modules/
+dist/
+
+# Ambiente — NUNCA commitar
+.env
+.env.local
+.env.production
+
+# Prisma
+prisma/migrations/*.sql
+
+# Build
+*.js.map
+*.d.ts.map
+
+# Logs
+*.log
+logs/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
