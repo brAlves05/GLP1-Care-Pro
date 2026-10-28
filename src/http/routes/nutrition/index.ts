@@ -4,6 +4,7 @@
 import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { prisma } from '../../../infrastructure/database/prisma.client';
+import { assertPatientAccess } from '../../../application/authorization/clinical-access';
 import { ForbiddenError, NotFoundError } from '../../errors/handler';
 import { Role, NutritionalPhase, NutritionalPlanStatus, MealType } from '../../../domain/enums';
 
@@ -63,15 +64,7 @@ export default async function nutritionRoutes(fastify: FastifyInstance): Promise
       });
       if (!nutriProfile) throw new ForbiddenError();
 
-      // Verifica vínculo clínico
-      const team = await prisma.clinicalTeam.findFirst({
-        where: {
-          nutritionistProfileId: nutriProfile.id,
-          patientProfileId: body.patientProfileId,
-          status: 'ACTIVE',
-        },
-      });
-      if (!team) throw new ForbiddenError('Sem vínculo clínico ativo com este paciente.');
+      await assertPatientAccess(request.user, body.patientProfileId);
 
       // Expira planos anteriores
       await prisma.nutritionalPlan.updateMany({
@@ -114,15 +107,7 @@ export default async function nutritionRoutes(fastify: FastifyInstance): Promise
 
       const plan = await prisma.nutritionalPlan.findUnique({ where: { id } });
       if (!plan) throw new NotFoundError('Plano nutricional');
-
-      // Paciente só acessa seu próprio plano
-      if (request.user.role === Role.PATIENT) {
-        const profile = await prisma.patientProfile.findUnique({
-          where: { userId: request.user.id },
-          select: { id: true },
-        });
-        if (profile?.id !== plan.patientProfileId) throw new ForbiddenError();
-      }
+      await assertPatientAccess(request.user, plan.patientProfileId);
 
       return reply.send({ data: plan });
     },
@@ -141,7 +126,7 @@ export default async function nutritionRoutes(fastify: FastifyInstance): Promise
 
       const plan = await prisma.nutritionalPlan.findUnique({
         where: { id },
-        select: { id: true, nutritionistProfileId: true },
+        select: { id: true, nutritionistProfileId: true, patientProfileId: true },
       });
       if (!plan) throw new NotFoundError('Plano nutricional');
 
@@ -150,6 +135,7 @@ export default async function nutritionRoutes(fastify: FastifyInstance): Promise
         select: { id: true },
       });
       if (nutriProfile?.id !== plan.nutritionistProfileId) throw new ForbiddenError();
+      await assertPatientAccess(request.user, plan.patientProfileId);
 
       const updated = await prisma.nutritionalPlan.update({
         where: { id },

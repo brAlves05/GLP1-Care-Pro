@@ -6,6 +6,10 @@ import { z } from 'zod';
 import { prisma } from '../../../infrastructure/database/prisma.client';
 import { ForbiddenError, NotFoundError } from '../../errors/handler';
 import { Role, AlertSeverity } from '../../../domain/enums';
+import {
+  accessiblePatientsWhere,
+  resolveRequesterProfile,
+} from '../../../application/authorization/clinical-access';
 
 const AlertQuerySchema = z.object({
   severity: z.nativeEnum(AlertSeverity).optional(),
@@ -24,6 +28,8 @@ export default async function alertsRoutes(fastify: FastifyInstance): Promise<vo
     fastify.authenticate,
     fastify.requireRole(Role.DOCTOR, Role.NUTRITIONIST),
   ];
+  // Somente o médico responsável registra ciência ou resolve o alerta
+  const doctorAuth = [fastify.authenticate, fastify.requireRole(Role.DOCTOR)];
 
   /**
    * GET /alerts
@@ -35,14 +41,12 @@ export default async function alertsRoutes(fastify: FastifyInstance): Promise<vo
     async (request, reply) => {
       const query = AlertQuerySchema.parse(request.query);
 
-      const doctorProfile = await prisma.doctorProfile.findUnique({
-        where: { userId: request.user.id },
-        select: { id: true },
-      });
+      const profile = await resolveRequesterProfile(request.user);
 
       const alerts = await prisma.clinicalAlert.findMany({
         where: {
-          ...(doctorProfile ? { doctorProfileId: doctorProfile.id } : {}),
+          ...(profile.role === Role.DOCTOR ? { doctorProfileId: profile.doctorProfileId } : {}),
+          patientProfile: accessiblePatientsWhere(profile),
           ...(query.patientId ? { patientProfileId: query.patientId } : {}),
           ...(query.severity ? { severity: query.severity } : {}),
           resolvedAt: query.resolved ? { not: null } : null,
@@ -67,7 +71,7 @@ export default async function alertsRoutes(fastify: FastifyInstance): Promise<vo
    */
   fastify.patch(
     '/:id/ack',
-    { preHandler: clinicalAuth },
+    { preHandler: doctorAuth },
     async (request, reply) => {
       const { id } = request.params as { id: string };
 
@@ -98,7 +102,7 @@ export default async function alertsRoutes(fastify: FastifyInstance): Promise<vo
    */
   fastify.patch(
     '/:id/resolve',
-    { preHandler: clinicalAuth },
+    { preHandler: doctorAuth },
     async (request, reply) => {
       const { id } = request.params as { id: string };
       const body = ResolveAlertSchema.parse(request.body);
@@ -108,15 +112,16 @@ export default async function alertsRoutes(fastify: FastifyInstance): Promise<vo
         select: { id: true, doctorProfileId: true, resolvedAt: true },
       });
       if (!alert) throw new NotFoundError('Alerta');
-      if (alert.resolvedAt) {
-        return reply.send({ message: 'Alerta já resolvido.', data: alert });
-      }
 
       const doctorProfile = await prisma.doctorProfile.findUnique({
         where: { userId: request.user.id },
         select: { id: true },
       });
       if (doctorProfile?.id !== alert.doctorProfileId) throw new ForbiddenError();
+
+      if (alert.resolvedAt) {
+        return reply.send({ message: 'Alerta já resolvido.', data: alert });
+      }
 
       const updated = await prisma.clinicalAlert.update({
         where: { id },

@@ -5,6 +5,7 @@
 import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { prisma } from '../../../infrastructure/database/prisma.client';
+import { assertPatientAccess } from '../../../application/authorization/clinical-access';
 import { ForbiddenError } from '../../errors/handler';
 import { Role, Medication } from '../../../domain/enums';
 
@@ -106,15 +107,7 @@ export default async function aiTriageRoutes(fastify: FastifyInstance): Promise<
       });
       if (!doctorProfile) throw new ForbiddenError();
 
-      // Verifica vínculo clínico
-      const team = await prisma.clinicalTeam.findFirst({
-        where: {
-          doctorProfileId: doctorProfile.id,
-          patientProfileId: body.patientProfileId,
-          status: 'ACTIVE',
-        },
-      });
-      if (!team) throw new ForbiddenError('Sem vínculo clínico ativo com este paciente.');
+      await assertPatientAccess(request.user, body.patientProfileId);
 
       const since = new Date(Date.now() - body.includePeriodDays * 24 * 60 * 60 * 1000);
 

@@ -2,7 +2,7 @@
 // Módulo de autenticação — 7 endpoints
 // Rate limiting extra em rotas sensíveis (login, MFA)
 
-import { FastifyInstance } from 'fastify';
+import { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { registerUseCase } from '../../../application/use-cases/auth/register.use-case';
 import { loginUseCase } from '../../../application/use-cases/auth/login.use-case';
@@ -11,7 +11,8 @@ import { refreshUseCase } from '../../../application/use-cases/auth/refresh.use-
 import { logoutUseCase } from '../../../application/use-cases/auth/logout.use-case';
 import { verifyCrmUseCase } from '../../../application/use-cases/auth/verify-crm.use-case';
 import { Role } from '../../../domain/enums';
-import { LOGIN_RATE_LIMIT, MFA_RATE_LIMIT } from '../../../shared/constants';
+import { AppError, UnauthorizedError } from '../../errors/handler';
+import { LOGIN_ACCOUNT_RATE_LIMIT, LOGIN_RATE_LIMIT, MFA_RATE_LIMIT } from '../../../shared/constants';
 
 // ── Schemas de validação ───────────────────────────────────────────────────────
 
@@ -69,9 +70,49 @@ const VerifyCrmSchema = z.object({
   crmState: z.string().length(2),
 });
 
+// ── Chaves de rate limit ───────────────────────────────────────────────────────
+
+/** Login: chave por conta (e-mail), complementa o limite por IP */
+function loginAccountRateKey(request: FastifyRequest): string {
+  const email = (request.body as { email?: unknown } | undefined)?.email;
+  return typeof email === 'string' ? `login:${email.trim().toLowerCase()}` : `login-ip:${request.ip}`;
+}
+
+/** MFA: limite por usuário do token (assinatura verificada), não por IP */
+function mfaRateKey(request: FastifyRequest): string {
+  const header = request.headers.authorization;
+  if (header?.startsWith('Bearer ')) {
+    try {
+      const payload = request.server.jwt.verify<{ sub?: unknown; type?: unknown }>(header.slice(7));
+      if (payload.type === 'access' && typeof payload.sub === 'string') return `mfa:${payload.sub}`;
+    } catch {
+      // token inválido: authenticate responderá 401
+    }
+  }
+  return `mfa-ip:${request.ip}`;
+}
+
 // ── Registro de rotas ──────────────────────────────────────────────────────────
 
 export default async function authRoutes(fastify: FastifyInstance): Promise<void> {
+  // Cota por conta, somada ao limite por IP da rota. Limitador avulso porque o plugin
+  // ignora um segundo limitador na mesma rota. Só tentativas com senha errada consomem
+  // a cota — logins bem-sucedidos não bloqueiam a conta.
+  const loginAccountLimiter = fastify.createRateLimit({
+    ...LOGIN_ACCOUNT_RATE_LIMIT,
+    keyGenerator: loginAccountRateKey,
+  });
+  const enforceLoginAccountLimit = async (request: FastifyRequest): Promise<void> => {
+    const result = await loginAccountLimiter(request, { increment: false });
+    if (!result.isAllowed && result.remaining === 0) {
+      throw new AppError(
+        429,
+        'Muitas tentativas para esta conta. Tente novamente mais tarde.',
+        'RATE_LIMIT_EXCEEDED',
+      );
+    }
+  };
+
   /**
    * POST /auth/register
    * Cadastro de novo usuário (médico | nutricionista | paciente)
@@ -100,7 +141,11 @@ export default async function authRoutes(fastify: FastifyInstance): Promise<void
    */
   fastify.post(
     '/login',
-    { config: { rateLimit: LOGIN_RATE_LIMIT } },
+    {
+      // Por IP (5/min) e por conta (20/15min): nem spraying de um IP, nem ataque distribuído a uma conta
+      config: { rateLimit: LOGIN_RATE_LIMIT },
+      preHandler: [enforceLoginAccountLimit],
+    },
     async (request, reply) => {
       const body = LoginSchema.parse(request.body);
 
@@ -108,6 +153,9 @@ export default async function authRoutes(fastify: FastifyInstance): Promise<void
         ...body,
         ipAddress: request.ip,
         userAgent: request.headers['user-agent'],
+      }).catch(async (error: unknown) => {
+        if (error instanceof UnauthorizedError) await loginAccountLimiter(request);
+        throw error;
       });
 
       return reply.send({ data: result });
@@ -137,7 +185,7 @@ export default async function authRoutes(fastify: FastifyInstance): Promise<void
     '/mfa/verify',
     {
       preHandler: [fastify.authenticate],
-      config: { rateLimit: MFA_RATE_LIMIT, allowPendingMfa: true },
+      config: { rateLimit: { ...MFA_RATE_LIMIT, keyGenerator: mfaRateKey }, allowPendingMfa: true },
     },
     async (request, reply) => {
       const { token } = MfaVerifySchema.parse(request.body);

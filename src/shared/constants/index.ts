@@ -16,6 +16,9 @@ export const REFRESH_TOKEN_TTL_SECONDS = 7 * 24 * 60 * 60;
 /** Janela de rate-limit para /auth/login — proteção contra força bruta */
 export const LOGIN_RATE_LIMIT = { max: 5, timeWindow: '1m' };
 
+/** Limite por conta (e-mail) no login — contra força bruta distribuída em vários IPs */
+export const LOGIN_ACCOUNT_RATE_LIMIT = { max: 20, timeWindow: '15m' };
+
 /** Janela de rate-limit para /auth/mfa/verify — proteção contra enumeração TOTP */
 export const MFA_RATE_LIMIT = { max: 5, timeWindow: '5m' };
 

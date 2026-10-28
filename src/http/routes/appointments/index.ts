@@ -3,9 +3,15 @@
 
 import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
+import { Prisma } from '@prisma/client';
 import { prisma } from '../../../infrastructure/database/prisma.client';
 import { ForbiddenError, NotFoundError } from '../../errors/handler';
 import { Role, AppointmentType, AppointmentStatus } from '../../../domain/enums';
+import {
+  accessiblePatientsWhere,
+  assertPatientAccess,
+  resolveRequesterProfile,
+} from '../../../application/authorization/clinical-access';
 
 const CreateAppointmentSchema = z.object({
   patientProfileId: z.string().cuid(),
@@ -54,14 +60,7 @@ export default async function appointmentsRoutes(fastify: FastifyInstance): Prom
       });
       if (!doctorProfile) throw new ForbiddenError();
 
-      const team = await prisma.clinicalTeam.findFirst({
-        where: {
-          doctorProfileId: doctorProfile.id,
-          patientProfileId: body.patientProfileId,
-          status: 'ACTIVE',
-        },
-      });
-      if (!team) throw new ForbiddenError('Sem vínculo clínico ativo com este paciente.');
+      await assertPatientAccess(request.user, body.patientProfileId);
 
       const appointment = await prisma.appointment.create({
         data: {
@@ -88,21 +87,11 @@ export default async function appointmentsRoutes(fastify: FastifyInstance): Prom
     async (request, reply) => {
       const query = AppointmentQuerySchema.parse(request.query);
 
-      let profileFilter: { doctorProfileId?: string; patientProfileId?: string } = {};
-
-      if (request.user.role === Role.DOCTOR) {
-        const profile = await prisma.doctorProfile.findUnique({
-          where: { userId: request.user.id },
-          select: { id: true },
-        });
-        profileFilter = { doctorProfileId: profile?.id };
-      } else if (request.user.role === Role.PATIENT) {
-        const profile = await prisma.patientProfile.findUnique({
-          where: { userId: request.user.id },
-          select: { id: true },
-        });
-        profileFilter = { patientProfileId: profile?.id };
-      }
+      const profile = await resolveRequesterProfile(request.user);
+      const profileFilter: Prisma.AppointmentWhereInput =
+        profile.role === Role.DOCTOR
+          ? { doctorProfileId: profile.doctorProfileId, patientProfile: accessiblePatientsWhere(profile) }
+          : { patientProfile: accessiblePatientsWhere(profile) };
 
       const appointments = await prisma.appointment.findMany({
         where: {
@@ -145,6 +134,7 @@ export default async function appointmentsRoutes(fastify: FastifyInstance): Prom
         select: { id: true },
       });
       if (doctorProfile?.id !== appointment.doctorProfileId) throw new ForbiddenError();
+      await assertPatientAccess(request.user, appointment.patientProfileId);
 
       const [record] = await prisma.$transaction([
         prisma.consultationRecord.create({
@@ -194,6 +184,7 @@ export default async function appointmentsRoutes(fastify: FastifyInstance): Prom
         select: { id: true },
       });
       if (doctorProfile?.id !== appointment.doctorProfileId) throw new ForbiddenError();
+      await assertPatientAccess(request.user, appointment.patientProfileId);
 
       const since = new Date(appointment.scheduledAt.getTime() - 30 * 24 * 60 * 60 * 1000);
       const patId = appointment.patientProfileId;

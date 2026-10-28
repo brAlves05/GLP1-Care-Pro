@@ -1,14 +1,14 @@
 // src/http/server.ts
 // Configuração central do Fastify — plugins, hooks e registro de rotas
 
-import Fastify, { FastifyInstance } from 'fastify';
+import Fastify, { FastifyInstance, FastifyServerOptions } from 'fastify';
 import fastifyJwt from '@fastify/jwt';
 import fastifyCors from '@fastify/cors';
 import fastifyHelmet from '@fastify/helmet';
 import fastifyRateLimit from '@fastify/rate-limit';
 import fp from 'fastify-plugin';
 
-import { errorHandler } from './errors/handler';
+import { AppError, errorHandler } from './errors/handler';
 import authenticatePlugin from './plugins/authenticate';
 import { getEncryptionKey, getJwtSecret } from '../infrastructure/config/secrets';
 import auditPlugin from './plugins/audit';
@@ -26,6 +26,16 @@ import nutritionRoutes from './routes/nutrition';
 import messagesRoutes from './routes/messages';
 import aiTriageRoutes from './routes/ai-triage';
 import notificationsRoutes from './routes/notifications';
+
+/**
+ * Confia em X-Forwarded-For somente dos proxies configurados (IPs/CIDRs separados por
+ * vírgula). Sem configuração, usa o IP da conexão — impede que o cliente forje o IP
+ * e burle o rate limit.
+ */
+export function parseTrustProxy(value: string | undefined): FastifyServerOptions['trustProxy'] {
+  const proxies = (value ?? '').split(',').map((v) => v.trim()).filter(Boolean);
+  return proxies.length > 0 ? proxies : false;
+}
 
 export async function buildServer(): Promise<FastifyInstance> {
   // Falha no boot se os segredos não estiverem configurados
@@ -48,8 +58,14 @@ export async function buildServer(): Promise<FastifyInstance> {
     },
     // Proteção contra DoS com payloads gigantes
     bodyLimit: 1_048_576, // 1 MiB
-    trustProxy: true,
+    trustProxy: parseTrustProxy(process.env['TRUST_PROXY']),
   });
+
+  if (process.env['NODE_ENV'] === 'production' && !process.env['TRUST_PROXY']) {
+    fastify.log.warn(
+      'TRUST_PROXY não configurado: atrás de um proxy reverso todos os clientes terão o IP do proxy e compartilharão o rate limit.',
+    );
+  }
 
   // ── Segurança ──────────────────────────────────────────────────────────────
   await fastify.register(fastifyHelmet, {
@@ -72,11 +88,9 @@ export async function buildServer(): Promise<FastifyInstance> {
     global: true,
     max: Number(process.env['RATE_LIMIT_MAX'] ?? 100),
     timeWindow: Number(process.env['RATE_LIMIT_WINDOW_MS'] ?? 60_000),
-    errorResponseBuilder: () => ({
-      statusCode: 429,
-      code: 'RATE_LIMIT_EXCEEDED',
-      message: 'Muitas requisições. Tente novamente em alguns segundos.',
-    }),
+    // O plugin lança o retorno deste builder; AppError é tratado pelo errorHandler (429)
+    errorResponseBuilder: () =>
+      new AppError(429, 'Muitas requisições. Tente novamente em alguns segundos.', 'RATE_LIMIT_EXCEEDED'),
   });
 
   // ── Autenticação JWT ───────────────────────────────────────────────────────

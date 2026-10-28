@@ -5,6 +5,7 @@
 import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { prisma } from '../../../infrastructure/database/prisma.client';
+import { haveActiveClinicalLink } from '../../../application/authorization/clinical-access';
 import { ForbiddenError, NotFoundError, BusinessRuleError } from '../../errors/handler';
 import { MessageType } from '../../../domain/enums';
 
@@ -32,12 +33,16 @@ export default async function messagesRoutes(fastify: FastifyInstance): Promise<
         throw new BusinessRuleError('Não é possível enviar mensagem para si mesmo.');
       }
 
-      // Verifica se o receptor existe e tem vínculo clínico com o remetente
       const receiver = await prisma.user.findUnique({
         where: { id: body.receiverId, deletedAt: null },
-        select: { id: true, role: true },
+        select: { id: true },
       });
       if (!receiver) throw new NotFoundError('Destinatário');
+
+      // Só é permitido conversar com quem tem vínculo clínico ativo com o remetente
+      if (!(await haveActiveClinicalLink(request.user.id, receiver.id))) {
+        throw new ForbiddenError('Sem vínculo clínico ativo com este destinatário.');
+      }
 
       // Localiza ou cria conversa
       const [idA, idB] = [request.user.id, body.receiverId].sort();

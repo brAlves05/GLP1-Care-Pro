@@ -5,6 +5,9 @@
 import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { prisma } from '../../../infrastructure/database/prisma.client';
+import { ForbiddenError, NotFoundError } from '../../errors/handler';
+import { Role } from '../../../domain/enums';
+import { accessiblePatientsWhere } from '../../../application/authorization/clinical-access';
 
 /**
  * Notificações são derivadas de alertas clínicos + outros eventos.
@@ -58,6 +61,10 @@ export default async function notificationsRoutes(fastify: FastifyInstance): Pro
           ? await prisma.clinicalAlert.findMany({
               where: {
                 doctorProfileId: doctorProfile.id,
+                patientProfile: accessiblePatientsWhere({
+                  role: Role.DOCTOR,
+                  doctorProfileId: doctorProfile.id,
+                }),
                 resolvedAt: null,
                 ...(query.read === true
                   ? { acknowledgedAt: { not: null } }
@@ -150,19 +157,23 @@ export default async function notificationsRoutes(fastify: FastifyInstance): Pro
     async (request, reply) => {
       const { id } = request.params as { id: string };
 
-      // Para médicos: ack do alerta clínico
+      // Para médicos: ack do alerta clínico — somente alertas do próprio médico
       if (request.user.role === 'DOCTOR') {
-        const alert = await prisma.clinicalAlert.findUnique({
-          where: { id },
-          select: { id: true, acknowledgedAt: true },
+        const doctorProfile = await prisma.doctorProfile.findUnique({
+          where: { userId: request.user.id },
+          select: { id: true },
         });
+        if (!doctorProfile) throw new ForbiddenError();
 
-        if (alert && !alert.acknowledgedAt) {
-          await prisma.clinicalAlert.update({
-            where: { id },
-            data: { acknowledgedAt: new Date() },
-          });
-        }
+        const owned = await prisma.clinicalAlert.count({
+          where: { id, doctorProfileId: doctorProfile.id },
+        });
+        if (owned === 0) throw new NotFoundError('Notificação');
+
+        await prisma.clinicalAlert.updateMany({
+          where: { id, doctorProfileId: doctorProfile.id, acknowledgedAt: null },
+          data: { acknowledgedAt: new Date() },
+        });
       }
 
       // Para pacientes: notificações derivadas são efêmeras (sem persistência de leitura)

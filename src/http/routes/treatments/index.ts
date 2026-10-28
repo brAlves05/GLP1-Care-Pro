@@ -4,6 +4,7 @@
 import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { prisma } from '../../../infrastructure/database/prisma.client';
+import { assertPatientAccess, Requester } from '../../../application/authorization/clinical-access';
 import { ForbiddenError, NotFoundError, BusinessRuleError } from '../../errors/handler';
 import { Role, Medication, TreatmentStatus } from '../../../domain/enums';
 
@@ -31,6 +32,16 @@ const UpdateStatusSchema = z.object({
   ]),
   reason: z.string().min(5, 'Motivo obrigatório'),
 });
+
+/** Acesso ao tratamento = acesso ao paciente dono do tratamento */
+async function assertTreatmentAccess(requester: Requester, treatmentId: string): Promise<void> {
+  const treatment = await prisma.treatment.findUnique({
+    where: { id: treatmentId },
+    select: { patientProfileId: true },
+  });
+  if (!treatment) throw new NotFoundError('Tratamento');
+  await assertPatientAccess(requester, treatment.patientProfileId);
+}
 
 export default async function treatmentsRoutes(fastify: FastifyInstance): Promise<void> {
   const doctorAuth = [
@@ -61,15 +72,7 @@ export default async function treatmentsRoutes(fastify: FastifyInstance): Promis
         );
       }
 
-      // Verifica vínculo com o paciente
-      const team = await prisma.clinicalTeam.findFirst({
-        where: {
-          doctorProfileId: doctorProfile.id,
-          patientProfileId: body.patientProfileId,
-          status: 'ACTIVE',
-        },
-      });
-      if (!team) throw new ForbiddenError('Sem vínculo clínico ativo com este paciente.');
+      await assertPatientAccess(request.user, body.patientProfileId);
 
       // Pausa tratamentos ativos anteriores automaticamente
       await prisma.treatment.updateMany({
@@ -118,15 +121,7 @@ export default async function treatmentsRoutes(fastify: FastifyInstance): Promis
       });
 
       if (!treatment) throw new NotFoundError('Tratamento');
-
-      // Paciente só acessa seus próprios tratamentos
-      if (request.user.role === Role.PATIENT) {
-        const profile = await prisma.patientProfile.findUnique({
-          where: { userId: request.user.id },
-          select: { id: true },
-        });
-        if (profile?.id !== treatment.patientProfileId) throw new ForbiddenError();
-      }
+      await assertPatientAccess(request.user, treatment.patientProfileId);
 
       return reply.send({ data: treatment });
     },
@@ -145,7 +140,7 @@ export default async function treatmentsRoutes(fastify: FastifyInstance): Promis
 
       const treatment = await prisma.treatment.findUnique({
         where: { id },
-        select: { id: true, status: true, doctorProfileId: true, currentDose: true, unit: true },
+        select: { id: true, status: true, doctorProfileId: true, patientProfileId: true, currentDose: true, unit: true },
       });
 
       if (!treatment) throw new NotFoundError('Tratamento');
@@ -158,6 +153,7 @@ export default async function treatmentsRoutes(fastify: FastifyInstance): Promis
         select: { id: true },
       });
       if (doctorProfile?.id !== treatment.doctorProfileId) throw new ForbiddenError();
+      await assertPatientAccess(request.user, treatment.patientProfileId);
 
       const updated = await prisma.treatment.update({
         where: { id },
@@ -189,7 +185,7 @@ export default async function treatmentsRoutes(fastify: FastifyInstance): Promis
 
       const treatment = await prisma.treatment.findUnique({
         where: { id },
-        select: { id: true, doctorProfileId: true, status: true },
+        select: { id: true, doctorProfileId: true, patientProfileId: true, status: true },
       });
       if (!treatment) throw new NotFoundError('Tratamento');
 
@@ -198,6 +194,7 @@ export default async function treatmentsRoutes(fastify: FastifyInstance): Promis
         select: { id: true },
       });
       if (doctorProfile?.id !== treatment.doctorProfileId) throw new ForbiddenError();
+      await assertPatientAccess(request.user, treatment.patientProfileId);
 
       const updated = await prisma.treatment.update({
         where: { id },
@@ -223,6 +220,7 @@ export default async function treatmentsRoutes(fastify: FastifyInstance): Promis
     { preHandler: [fastify.authenticate] },
     async (request, reply) => {
       const { id } = request.params as { id: string };
+      await assertTreatmentAccess(request.user, id);
 
       const protocols = await prisma.doseProtocol.findMany({
         where: { treatmentId: id },
