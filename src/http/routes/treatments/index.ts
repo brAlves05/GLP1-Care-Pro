@@ -13,7 +13,7 @@ const StartTreatmentSchema = z.object({
   currentDose: z.number().positive(),
   unit: z.string().default('mg'),
   startDate: z.string().date(),
-  protocol: z.record(z.unknown()), // JSON flexível — validado no domínio
+  protocol: z.record(z.string(), z.json()), // JSON flexível — validado no domínio
 });
 
 const AdjustDoseSchema = z.object({
@@ -36,7 +36,6 @@ export default async function treatmentsRoutes(fastify: FastifyInstance): Promis
   const doctorAuth = [
     fastify.authenticate,
     fastify.requireRole(Role.DOCTOR),
-    fastify.requireMfa,
   ];
 
   /**
@@ -103,7 +102,7 @@ export default async function treatmentsRoutes(fastify: FastifyInstance): Promis
    */
   fastify.get(
     '/:id',
-    { preHandler: [fastify.authenticate, fastify.requireMfa] },
+    { preHandler: [fastify.authenticate] },
     async (request, reply) => {
       const { id } = request.params as { id: string };
 
@@ -221,7 +220,7 @@ export default async function treatmentsRoutes(fastify: FastifyInstance): Promis
    */
   fastify.get(
     '/:id/protocol',
-    { preHandler: [fastify.authenticate, fastify.requireMfa] },
+    { preHandler: [fastify.authenticate] },
     async (request, reply) => {
       const { id } = request.params as { id: string };
 

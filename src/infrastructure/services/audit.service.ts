@@ -2,6 +2,7 @@
 // Serviço de auditoria explícita — para ações críticas não cobertas pelo hook automático
 // Ex: login, logout, acesso negado, exportação de dados (LGPD portabilidade)
 
+import { Prisma } from '@prisma/client';
 import { prisma } from '../database/prisma.client';
 
 interface AuditEntry {
@@ -12,7 +13,7 @@ interface AuditEntry {
   ipAddress?: string;
   userAgent?: string;
   /** Nunca incluir dados clínicos aqui — apenas metadados */
-  metadata?: Record<string, unknown>;
+  metadata?: Prisma.InputJsonObject;
 }
 
 export class AuditService {
@@ -30,7 +31,7 @@ export class AuditService {
         resourceId: entry.resourceId ?? null,
         ipAddress: entry.ipAddress ?? null,
         userAgent: entry.userAgent ?? null,
-        metadata: entry.metadata ?? null,
+        metadata: entry.metadata,
       },
     });
   }

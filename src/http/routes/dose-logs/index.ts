@@ -5,8 +5,6 @@ import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { prisma } from '../../../infrastructure/database/prisma.client';
 import { ForbiddenError, NotFoundError } from '../../errors/handler';
-import { Role } from '../../../domain/enums';
-import { SymptomScore } from '../../../domain/value-objects/symptom-score.vo';
 
 const ConfirmDoseSchema = z.object({
   treatmentId: z.string().cuid(),

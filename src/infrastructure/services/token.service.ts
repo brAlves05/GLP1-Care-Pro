@@ -6,6 +6,7 @@ import { FastifyInstance } from 'fastify';
 import * as crypto from 'crypto';
 import { Role } from '../../domain/enums';
 import { JwtPayload, RefreshTokenPayload } from '../../shared/types/fastify';
+import { ACCESS_TOKEN_TTL_SECONDS, REFRESH_TOKEN_TTL_SECONDS } from '../../shared/constants';
 
 export interface TokenPair {
   accessToken: string;
@@ -28,6 +29,7 @@ export class TokenService {
       email: payload.email,
       role: payload.role,
       sessionId: payload.sessionId,
+      type: 'access',
     };
 
     const refreshPayload: RefreshTokenPayload = {
@@ -37,19 +39,19 @@ export class TokenService {
     };
 
     const accessToken = this.fastify.jwt.sign(accessPayload, {
-      expiresIn: '15m',
+      expiresIn: `${ACCESS_TOKEN_TTL_SECONDS}s`,
     });
 
     const refreshToken = this.fastify.jwt.sign(refreshPayload, {
-      expiresIn: '7d',
+      expiresIn: `${REFRESH_TOKEN_TTL_SECONDS}s`,
     });
 
-    return { accessToken, refreshToken, expiresIn: 900 };
+    return { accessToken, refreshToken, expiresIn: ACCESS_TOKEN_TTL_SECONDS };
   }
 
   /** Verifica e decodifica um refresh token */
   verifyRefreshToken(token: string): RefreshTokenPayload {
-    const decoded = this.fastify.jwt.verify<RefreshTokenPayload>(token);
+    const decoded = this.fastify.jwt.verify<JwtPayload | RefreshTokenPayload>(token);
     if (decoded.type !== 'refresh') {
       throw new Error('Token inválido: não é um refresh token');
     }

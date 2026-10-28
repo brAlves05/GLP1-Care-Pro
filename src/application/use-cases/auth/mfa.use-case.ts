@@ -53,19 +53,21 @@ export async function setupMfaUseCase(userId: string): Promise<MfaSetupOutput> {
 
 export interface MfaVerifyInput {
   userId: string;
+  /** Sessão que passa a ter o MFA validado */
+  sessionId: string;
   token: string;
   ipAddress?: string;
 }
 
 /**
- * Verifica o código TOTP:
- * - Na primeira vez (setup): ativa o MFA na conta.
- * - No login: valida identidade do profissional.
+ * Verifica o código TOTP e marca a sessão atual como validada:
+ * - Na primeira vez (setup): também ativa o MFA na conta.
+ * - No login: libera o acesso às rotas clínicas para esta sessão.
  */
 export async function verifyMfaUseCase(input: MfaVerifyInput): Promise<void> {
   const user = await prisma.user.findUnique({
     where: { id: input.userId },
-    select: { email: true, mfaSecret: true, mfaEnabled: true },
+    select: { email: true, mfaSecret: true },
   });
 
   if (!user || !user.mfaSecret) {
@@ -76,9 +78,9 @@ export async function verifyMfaUseCase(input: MfaVerifyInput): Promise<void> {
   }
 
   const secret = mfaService.decryptSecret(user.mfaSecret);
-  const isValid = mfaService.verifyToken(secret, input.token);
+  const step = mfaService.verifyTokenStep(secret, input.token);
 
-  if (!isValid) {
+  if (step === null) {
     await auditService.logAuth('LOGIN_FAILED', input.userId, {
       email: user.email,
       ipAddress: input.ipAddress,
@@ -86,13 +88,25 @@ export async function verifyMfaUseCase(input: MfaVerifyInput): Promise<void> {
     throw new UnauthorizedError('Código de verificação inválido ou expirado.');
   }
 
-  // Ativa MFA se era o primeiro setup
-  if (!user.mfaEnabled) {
-    await prisma.user.update({
-      where: { id: input.userId },
-      data: { mfaEnabled: true },
+  await prisma.$transaction(async (tx) => {
+    // Reserva o passo TOTP de forma atômica: um código já usado não libera outra sessão
+    const claimed = await tx.user.updateMany({
+      where: {
+        id: input.userId,
+        OR: [{ mfaLastUsedStep: null }, { mfaLastUsedStep: { lt: step } }],
+      },
+      // Ativa MFA no primeiro setup (idempotente nas verificações seguintes)
+      data: { mfaLastUsedStep: step, mfaEnabled: true },
     });
-  }
+    if (claimed.count === 0) {
+      throw new UnauthorizedError('Código já utilizado. Aguarde o próximo código.');
+    }
+
+    await tx.userSession.update({
+      where: { id: input.sessionId, userId: input.userId },
+      data: { mfaVerifiedAt: new Date() },
+    });
+  });
 
   await auditService.logAuth('MFA_VERIFIED', input.userId, {
     email: user.email,

@@ -46,9 +46,7 @@ const RegisterSchema = z.discriminatedUnion('role', [
       dateOfBirth: z.string().date('Data inválida'),
       biologicalSex: z.enum(['MALE', 'FEMALE', 'INTERSEX']),
       heightCm: z.number().min(50).max(250).optional(),
-      lgpdConsent: z.literal(true, {
-        errorMap: () => ({ message: 'Consentimento LGPD obrigatório' }),
-      }),
+      lgpdConsent: z.literal(true, { error: 'Consentimento LGPD obrigatório' }),
     }),
   }),
 ]);
@@ -123,7 +121,7 @@ export default async function authRoutes(fastify: FastifyInstance): Promise<void
    */
   fastify.post(
     '/mfa/setup',
-    { preHandler: [fastify.authenticate] },
+    { preHandler: [fastify.authenticate], config: { allowPendingMfa: true } },
     async (request, reply) => {
       const result = await setupMfaUseCase(request.user.id);
       return reply.send({ data: result });
@@ -139,13 +137,14 @@ export default async function authRoutes(fastify: FastifyInstance): Promise<void
     '/mfa/verify',
     {
       preHandler: [fastify.authenticate],
-      config: { rateLimit: MFA_RATE_LIMIT },
+      config: { rateLimit: MFA_RATE_LIMIT, allowPendingMfa: true },
     },
     async (request, reply) => {
       const { token } = MfaVerifySchema.parse(request.body);
 
       await verifyMfaUseCase({
         userId: request.user.id,
+        sessionId: request.user.sessionId,
         token,
         ipAddress: request.ip,
       });
@@ -170,7 +169,7 @@ export default async function authRoutes(fastify: FastifyInstance): Promise<void
    */
   fastify.post(
     '/logout',
-    { preHandler: [fastify.authenticate] },
+    { preHandler: [fastify.authenticate], config: { allowPendingMfa: true } },
     async (request, reply) => {
       await logoutUseCase({
         userId: request.user.id,

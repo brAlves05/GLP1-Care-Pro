@@ -22,8 +22,8 @@ export class AppError extends Error {
 
 /** Erros de autorização — 403 */
 export class ForbiddenError extends AppError {
-  constructor(message = 'Acesso negado') {
-    super(403, message, 'FORBIDDEN');
+  constructor(message = 'Acesso negado', code = 'FORBIDDEN') {
+    super(403, message, code);
   }
 }
 
@@ -70,7 +70,7 @@ export function errorHandler(
       statusCode: 400,
       code: 'VALIDATION_ERROR',
       message: 'Dados inválidos',
-      errors: error.errors.map((e) => ({
+      errors: error.issues.map((e) => ({
         field: e.path.join('.'),
         message: e.message,
       })),
@@ -112,9 +112,7 @@ export function errorHandler(
   if (
     'code' in error &&
     typeof error.code === 'string' &&
-    (error.code === 'FST_JWT_NO_AUTHORIZATION_IN_HEADER' ||
-      error.code === 'FST_JWT_AUTHORIZATION_TOKEN_EXPIRED' ||
-      error.code === 'FST_JWT_AUTHORIZATION_TOKEN_INVALID')
+    error.code.startsWith('FST_JWT_')
   ) {
     reply.status(401).send({
       statusCode: 401,

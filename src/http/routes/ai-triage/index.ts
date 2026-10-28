@@ -96,7 +96,7 @@ export default async function aiTriageRoutes(fastify: FastifyInstance): Promise<
    */
   fastify.post(
     '/generate-report',
-    { preHandler: [fastify.authenticate, fastify.requireRole(Role.DOCTOR), fastify.requireMfa] },
+    { preHandler: [fastify.authenticate, fastify.requireRole(Role.DOCTOR)] },
     async (request, reply) => {
       const body = GenerateReportSchema.parse(request.body);
 
@@ -165,7 +165,7 @@ export default async function aiTriageRoutes(fastify: FastifyInstance): Promise<
    */
   fastify.post(
     '/check-interactions',
-    { preHandler: [fastify.authenticate, fastify.requireRole(Role.DOCTOR), fastify.requireMfa] },
+    { preHandler: [fastify.authenticate, fastify.requireRole(Role.DOCTOR)] },
     async (request, reply) => {
       const body = CheckInteractionsSchema.parse(request.body);
 

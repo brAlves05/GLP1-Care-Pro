@@ -6,7 +6,7 @@ import { Role } from '../../domain/enums';
 
 declare module '@fastify/jwt' {
   interface FastifyJWT {
-    payload: JwtPayload;
+    payload: JwtPayload | RefreshTokenPayload;
     user: AuthenticatedUser;
   }
 }
@@ -16,6 +16,14 @@ declare module 'fastify' {
     /** Usuário autenticado — disponível após o hook authenticate */
     user: AuthenticatedUser;
   }
+
+  interface FastifyContextConfig {
+    /**
+     * Permite acesso de profissional cuja sessão ainda não passou pelo TOTP.
+     * Somente para as rotas do próprio fluxo de MFA e logout.
+     */
+    allowPendingMfa?: boolean;
+  }
 }
 
 /** Payload codificado no access token JWT */
@@ -24,6 +32,7 @@ export interface JwtPayload {
   email: string;
   role: Role;
   sessionId: string;  // UserSession.id — para revogação
+  type: 'access';
   iat?: number;
   exp?: number;
 }
@@ -36,7 +45,7 @@ export interface AuthenticatedUser {
   sessionId: string;
 }
 
-/** Payload do refresh token — escopo limitado */
+/** Payload do refresh token — escopo limitado, nunca aceito como access token */
 export interface RefreshTokenPayload {
   sub: string;
   sessionId: string;

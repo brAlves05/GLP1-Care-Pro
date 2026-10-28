@@ -1,6 +1,7 @@
 // src/application/use-cases/auth/login.use-case.ts
 // Login com e-mail/senha — retorna tokens JWT após validação
-// Profissionais com MFA habilitado recebem token parcial até verificar o TOTP
+// Profissionais recebem sessão com MFA pendente: só acessam /auth/mfa/* e /auth/logout
+// até validar o TOTP (ou configurá-lo, no primeiro acesso)
 
 import { FastifyInstance } from 'fastify';
 import * as crypto from 'crypto';
@@ -8,9 +9,9 @@ import { prisma } from '../../../infrastructure/database/prisma.client';
 import { passwordService } from '../../../infrastructure/services/password.service';
 import { TokenService } from '../../../infrastructure/services/token.service';
 import { auditService } from '../../../infrastructure/services/audit.service';
-import { UnauthorizedError, BusinessRuleError } from '../../../http/errors/handler';
+import { UnauthorizedError } from '../../../http/errors/handler';
 import { Role } from '../../../domain/enums';
-import { MFA_REQUIRED_ROLES } from '../../../shared/constants';
+import { REFRESH_TOKEN_TTL_SECONDS, requiresMfa } from '../../../shared/constants';
 
 export interface LoginInput {
   email: string;
@@ -30,6 +31,8 @@ export interface LoginOutput {
   };
   /** true = profissional deve verificar TOTP antes de acessar rotas clínicas */
   mfaPending: boolean;
+  /** true = profissional ainda não configurou o autenticador (/auth/mfa/setup) */
+  mfaSetupRequired: boolean;
 }
 
 export async function loginUseCase(
@@ -51,8 +54,8 @@ export async function loginUseCase(
   const GENERIC_ERROR = 'E-mail ou senha inválidos.';
 
   if (!user) {
-    // Executa hash fictício para evitar timing attack por enumeração de e-mail
-    await passwordService.verify('$argon2id$v=19$m=65536,t=3,p=4$dummy', 'dummy');
+    // Verifica contra um hash real para igualar o tempo de resposta (anti-enumeração de e-mail)
+    await passwordService.verify(await passwordService.dummyHash(), input.password);
     await auditService.logAuth('LOGIN_FAILED', undefined, {
       email: input.email,
       ipAddress: input.ipAddress,
@@ -71,14 +74,7 @@ export async function loginUseCase(
     throw new UnauthorizedError(GENERIC_ERROR);
   }
 
-  // Verifica se profissional precisa de MFA
-  const isMfaRequired = (MFA_REQUIRED_ROLES as readonly string[]).includes(user.role);
-  if (isMfaRequired && !user.mfaEnabled) {
-    throw new BusinessRuleError(
-      'MFA obrigatório. Configure o autenticador em /auth/mfa/setup antes do primeiro acesso.',
-      'MFA_SETUP_REQUIRED',
-    );
-  }
+  const isMfaRequired = requiresMfa(user.role);
 
   // Cria sessão — token armazenado como hash SHA-256
   const rawSessionToken = crypto.randomBytes(32).toString('hex');
@@ -90,7 +86,7 @@ export async function loginUseCase(
       tokenHash,
       ipAddress: input.ipAddress ?? 'unknown',
       userAgent: input.userAgent ?? 'unknown',
-      expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // 7 dias
+      expiresAt: new Date(Date.now() + REFRESH_TOKEN_TTL_SECONDS * 1000),
     },
   });
 
@@ -111,7 +107,7 @@ export async function loginUseCase(
   return {
     ...tokens,
     user: { id: user.id, email: user.email, role: user.role as Role },
-    // Se tem MFA habilitado, o cliente deve verificar TOTP antes de prosseguir
-    mfaPending: isMfaRequired && user.mfaEnabled,
+    mfaPending: isMfaRequired,
+    mfaSetupRequired: isMfaRequired && !user.mfaEnabled,
   };
 }

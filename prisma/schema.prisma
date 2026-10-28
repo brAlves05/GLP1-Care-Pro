@@ -159,6 +159,8 @@ model User {
   /// Segredo TOTP para MFA — criptografado em repouso
   mfaSecret    String?
   mfaEnabled   Boolean @default(false)
+  /// Último passo TOTP aceito — impede reuso do mesmo código
+  mfaLastUsedStep Int?
   /// Soft delete — LGPD: dados retidos por obrigação legal (5 anos CFM)
   deletedAt DateTime?
   createdAt DateTime  @default(now())
@@ -195,6 +197,8 @@ model UserSession {
   userAgent    String
   expiresAt    DateTime
   revokedAt    DateTime?
+  /// Momento em que o TOTP foi validado nesta sessão — null = MFA pendente
+  mfaVerifiedAt DateTime?
   createdAt    DateTime @default(now())
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)

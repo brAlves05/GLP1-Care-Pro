@@ -1,13 +1,24 @@
 // src/http/plugins/authenticate.ts
 // Hook de autenticação JWT — verifica token e popula request.user
 // Também valida se a sessão foi revogada (logout, troca de senha)
+// e se o profissional de saúde já validou o TOTP nesta sessão
 
 import fp from 'fastify-plugin';
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
+import { z } from 'zod';
 import { prisma } from '../../infrastructure/database/prisma.client';
 import { UnauthorizedError, ForbiddenError } from '../errors/handler';
 import { Role } from '../../domain/enums';
-import { MFA_REQUIRED_ROLES } from '../../shared/constants';
+import { requiresMfa } from '../../shared/constants';
+
+/** Somente access tokens: refresh tokens não têm `type: 'access'` nem papel */
+const AccessClaimsSchema = z.object({
+  sub: z.string().min(1),
+  email: z.string(),
+  role: z.enum(Role),
+  sessionId: z.string().min(1),
+  type: z.literal('access'),
+});
 
 /**
  * Decora o Fastify com os hooks de autenticação e autorização.
@@ -18,27 +29,24 @@ import { MFA_REQUIRED_ROLES } from '../../shared/constants';
 export default fp(async (fastify: FastifyInstance) => {
   /**
    * Verifica o JWT e valida a sessão no banco.
-   * Rejeita tokens de sessões revogadas (logout, MFA reset).
+   * Rejeita tokens de sessões revogadas (logout, MFA reset) e, para
+   * médicos e nutricionistas, sessões que ainda não passaram pelo TOTP.
    */
   fastify.decorate(
     'authenticate',
     async (request: FastifyRequest, _reply: FastifyReply): Promise<void> => {
-      await request.jwtVerify();
+      const claims = AccessClaimsSchema.safeParse(await request.jwtVerify());
+      if (!claims.success) {
+        throw new UnauthorizedError('Token inválido.');
+      }
+      const { sub: userId, email, role, sessionId } = claims.data;
 
-      const { sub: userId, sessionId } = request.user as {
-        sub: string;
-        sessionId: string;
-        email: string;
-        role: Role;
-      };
-
-      // Verifica se a sessão ainda é válida no banco
       const session = await prisma.userSession.findUnique({
         where: { id: sessionId },
-        select: { revokedAt: true, expiresAt: true },
+        select: { userId: true, revokedAt: true, expiresAt: true, mfaVerifiedAt: true },
       });
 
-      if (!session || session.revokedAt !== null) {
+      if (!session || session.userId !== userId || session.revokedAt !== null) {
         throw new UnauthorizedError('Sessão encerrada. Faça login novamente.');
       }
 
@@ -46,22 +54,18 @@ export default fp(async (fastify: FastifyInstance) => {
         throw new UnauthorizedError('Sessão expirada. Faça login novamente.');
       }
 
-      // Popula request.user com os dados do JWT (já validados)
-      const payload = request.user as {
-        sub: string;
-        email: string;
-        role: Role;
-        sessionId: string;
-      };
+      if (
+        requiresMfa(role) &&
+        session.mfaVerifiedAt === null &&
+        request.routeOptions.config.allowPendingMfa !== true
+      ) {
+        throw new ForbiddenError(
+          'Verificação em duas etapas pendente. Conclua em /auth/mfa/setup e /auth/mfa/verify.',
+          'MFA_REQUIRED',
+        );
+      }
 
-      request.user = {
-        id: payload.sub,
-        email: payload.email,
-        role: payload.role,
-        sessionId: payload.sessionId,
-      };
-
-      void userId; // usado indiretamente via payload.sub
+      request.user = { id: userId, email, role, sessionId };
     },
   );
 
@@ -80,29 +84,6 @@ export default fp(async (fastify: FastifyInstance) => {
         }
       },
   );
-
-  /**
-   * Valida que profissionais completaram o MFA antes de acessar rotas clínicas.
-   */
-  fastify.decorate(
-    'requireMfa',
-    async (request: FastifyRequest, _reply: FastifyReply): Promise<void> => {
-      if (
-        (MFA_REQUIRED_ROLES as readonly string[]).includes(request.user.role)
-      ) {
-        const user = await prisma.user.findUnique({
-          where: { id: request.user.id },
-          select: { mfaEnabled: true },
-        });
-
-        if (!user?.mfaEnabled) {
-          throw new ForbiddenError(
-            'MFA obrigatório para profissionais de saúde. Configure em /auth/mfa/setup.',
-          );
-        }
-      }
-    },
-  );
 });
 
 // Extensão dos tipos Fastify para os decorators
@@ -115,9 +96,5 @@ declare module 'fastify' {
     requireRole: (
       ...roles: Role[]
     ) => (request: FastifyRequest, reply: FastifyReply) => Promise<void>;
-    requireMfa: (
-      request: FastifyRequest,
-      reply: FastifyReply,
-    ) => Promise<void>;
   }
 }

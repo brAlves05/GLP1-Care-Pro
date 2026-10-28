@@ -4,6 +4,7 @@
 
 import { authenticator } from 'otplib';
 import * as crypto from 'crypto';
+import { getEncryptionKey } from '../config/secrets';
 
 /**
  * Janela de tolerância: aceita ±1 período (30s) para compensar
@@ -11,16 +12,14 @@ import * as crypto from 'crypto';
  */
 authenticator.options = { window: 1 };
 
-/**
- * Chave mestre para criptografia do segredo TOTP em repouso.
- * Nunca armazenar o segredo TOTP em texto claro no banco.
- */
-const MASTER_KEY = Buffer.from(
-  process.env['ENCRYPTION_MASTER_KEY'] ?? 'REPLACE_IN_PRODUCTION_32_CHARS!!',
-  'utf8',
-).slice(0, 32);
-
 const ALGORITHM = 'aes-256-gcm';
+const TOTP_STEP_SECONDS = 30;
+
+let encryptionKey: Buffer | undefined;
+function key(): Buffer {
+  encryptionKey ??= getEncryptionKey();
+  return encryptionKey;
+}
 
 export class MfaService {
   /** Gera um novo segredo TOTP para o usuário */
@@ -37,11 +36,14 @@ export class MfaService {
   }
 
   /**
-   * Verifica se o token TOTP é válido para o segredo dado.
+   * Verifica o código TOTP e retorna o passo de tempo (janela de 30s) em que ele é válido,
+   * ou null se inválido. O passo é usado para impedir reuso do mesmo código.
    * O segredo deve ser descriptografado antes de chamar este método.
    */
-  verifyToken(secret: string, token: string): boolean {
-    return authenticator.verify({ secret, token });
+  verifyTokenStep(secret: string, token: string, now: number = Date.now()): number | null {
+    const delta = authenticator.checkDelta(token, secret);
+    if (delta === null) return null;
+    return Math.floor(now / 1000 / TOTP_STEP_SECONDS) + delta;
   }
 
   /**
@@ -50,7 +52,7 @@ export class MfaService {
    */
   encryptSecret(plaintext: string): string {
     const iv = crypto.randomBytes(12);
-    const cipher = crypto.createCipheriv(ALGORITHM, MASTER_KEY, iv);
+    const cipher = crypto.createCipheriv(ALGORITHM, key(), iv);
 
     const encrypted = Buffer.concat([
       cipher.update(plaintext, 'utf8'),
@@ -76,7 +78,7 @@ export class MfaService {
     const tag = Buffer.from(tagHex, 'hex');
     const ciphertext = Buffer.from(ciphertextHex, 'hex');
 
-    const decipher = crypto.createDecipheriv(ALGORITHM, MASTER_KEY, iv);
+    const decipher = crypto.createDecipheriv(ALGORITHM, key(), iv);
     decipher.setAuthTag(tag);
 
     return decipher.update(ciphertext).toString('utf8') + decipher.final('utf8');

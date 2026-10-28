@@ -23,7 +23,6 @@ export default async function alertsRoutes(fastify: FastifyInstance): Promise<vo
   const clinicalAuth = [
     fastify.authenticate,
     fastify.requireRole(Role.DOCTOR, Role.NUTRITIONIST),
-    fastify.requireMfa,
   ];
 
   /**

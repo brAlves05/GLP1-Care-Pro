@@ -3,11 +3,15 @@
 /** Perfis que exigem MFA obrigatório (CFM / CFF) */
 export const MFA_REQUIRED_ROLES = ['DOCTOR', 'NUTRITIONIST'] as const;
 
-/** Duração do access token (15 minutos) */
-export const ACCESS_TOKEN_TTL = '15m';
+export function requiresMfa(role: string): boolean {
+  return (MFA_REQUIRED_ROLES as readonly string[]).includes(role);
+}
 
-/** Duração do refresh token (7 dias) */
-export const REFRESH_TOKEN_TTL = '7d';
+/** Duração do access token (15 minutos) */
+export const ACCESS_TOKEN_TTL_SECONDS = 15 * 60;
+
+/** Duração do refresh token e da sessão (7 dias) */
+export const REFRESH_TOKEN_TTL_SECONDS = 7 * 24 * 60 * 60;
 
 /** Janela de rate-limit para /auth/login — proteção contra força bruta */
 export const LOGIN_RATE_LIMIT = { max: 5, timeWindow: '1m' };

@@ -1,4 +1,5 @@
 import Link from 'next/link';
+import { notFound } from 'next/navigation';
 import {
   ArrowLeft, Activity, Syringe, CalendarDays, MessageSquare,
   TrendingDown, AlertTriangle, CheckCircle2, Clock, Video,
@@ -26,8 +27,10 @@ function ScoreBar({ value }: { value: number }) {
   );
 }
 
-export default function PatientDetailPage({ params }: { params: { id: string } }) {
-  const patient = PATIENTS.find((p) => p.id === params.id) ?? PATIENTS[0]!;
+export default async function PatientDetailPage({ params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
+  const patient = PATIENTS.find((p) => p.id === id);
+  if (!patient) notFound();
   const alerts  = ALERTS.filter((a) => a.patientId === patient.id && !a.resolvedAt);
   const nextAppt = APPOINTMENTS.find((a) => a.patientId === patient.id);
 

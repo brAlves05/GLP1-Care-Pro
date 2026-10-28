@@ -45,7 +45,6 @@ export default async function nutritionRoutes(fastify: FastifyInstance): Promise
   const nutriAuth = [
     fastify.authenticate,
     fastify.requireRole(Role.NUTRITIONIST),
-    fastify.requireMfa,
   ];
 
   /**
@@ -109,7 +108,7 @@ export default async function nutritionRoutes(fastify: FastifyInstance): Promise
    */
   fastify.get(
     '/plans/:id',
-    { preHandler: [fastify.authenticate, fastify.requireMfa] },
+    { preHandler: [fastify.authenticate] },
     async (request, reply) => {
       const { id } = request.params as { id: string };
 

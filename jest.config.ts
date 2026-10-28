@@ -6,6 +6,12 @@ const config: Config = {
   testEnvironment: 'node',
   roots: ['<rootDir>/src'],
   testMatch: ['**/*.test.ts'],
+  // `cookie` (usado por app.inject do Fastify 5) é distribuído só como ESM
+  transform: {
+    '^.+\\.ts$': 'ts-jest',
+    '/node_modules/cookie/.+\\.js$': ['ts-jest', { tsconfig: { allowJs: true } }],
+  },
+  transformIgnorePatterns: ['/node_modules/(?!cookie/)'],
   moduleNameMapper: {
     '^@domain/(.*)$': '<rootDir>/src/domain/$1',
     '^@application/(.*)$': '<rootDir>/src/application/$1',

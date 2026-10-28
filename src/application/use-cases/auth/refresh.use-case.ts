@@ -6,6 +6,7 @@ import { prisma } from '../../../infrastructure/database/prisma.client';
 import { TokenService } from '../../../infrastructure/services/token.service';
 import { UnauthorizedError } from '../../../http/errors/handler';
 import { Role } from '../../../domain/enums';
+import { REFRESH_TOKEN_TTL_SECONDS } from '../../../shared/constants';
 
 export interface RefreshOutput {
   accessToken: string;
@@ -53,7 +54,7 @@ export async function refreshUseCase(
   // Estende expiração da sessão
   await prisma.userSession.update({
     where: { id: session.id },
-    data: { expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) },
+    data: { expiresAt: new Date(Date.now() + REFRESH_TOKEN_TTL_SECONDS * 1000) },
   });
 
   return tokens;

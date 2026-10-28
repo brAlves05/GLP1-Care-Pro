@@ -29,7 +29,7 @@ const PreferencesSchema = z.object({
     push: z.boolean().default(true),
     email: z.boolean().default(true),
     sms: z.boolean().default(false),
-  }).default({}),
+  }).prefault({}),
   /** Horário de preferência para lembretes (formato HH:mm) */
   preferredReminderTime: z.string().regex(/^\d{2}:\d{2}$/).default('08:00'),
 });

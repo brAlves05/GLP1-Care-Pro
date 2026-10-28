@@ -74,7 +74,7 @@ const CreatePatientSchema = z.object({
 // ── Rotas ──────────────────────────────────────────────────────────────────────
 
 export default async function patientsRoutes(fastify: FastifyInstance): Promise<void> {
-  const auth = [fastify.authenticate, fastify.requireMfa];
+  const auth = [fastify.authenticate];
 
   /**
    * GET /patients
@@ -82,7 +82,7 @@ export default async function patientsRoutes(fastify: FastifyInstance): Promise<
    */
   fastify.get(
     '/',
-    { preHandler: [fastify.authenticate, fastify.requireRole(Role.DOCTOR, Role.NUTRITIONIST), fastify.requireMfa] },
+    { preHandler: [fastify.authenticate, fastify.requireRole(Role.DOCTOR, Role.NUTRITIONIST)] },
     async (request, reply) => {
       const query = ListPatientsQuerySchema.parse(request.query);
       const skip = (query.page - 1) * query.limit;
@@ -137,7 +137,7 @@ export default async function patientsRoutes(fastify: FastifyInstance): Promise<
    */
   fastify.post(
     '/',
-    { preHandler: [fastify.authenticate, fastify.requireRole(Role.DOCTOR), fastify.requireMfa] },
+    { preHandler: [fastify.authenticate, fastify.requireRole(Role.DOCTOR)] },
     async (request, reply) => {
       const body = CreatePatientSchema.parse(request.body);
 
@@ -170,7 +170,7 @@ export default async function patientsRoutes(fastify: FastifyInstance): Promise<
             dateOfBirth: new Date(body.dateOfBirth),
             biologicalSex: body.biologicalSex,
             heightCm: body.heightCm ?? null,
-            emergencyContact: body.emergencyContact ?? null,
+            emergencyContact: body.emergencyContact,
           },
         });
 

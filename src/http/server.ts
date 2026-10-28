@@ -10,6 +10,7 @@ import fp from 'fastify-plugin';
 
 import { errorHandler } from './errors/handler';
 import authenticatePlugin from './plugins/authenticate';
+import { getEncryptionKey, getJwtSecret } from '../infrastructure/config/secrets';
 import auditPlugin from './plugins/audit';
 
 // Módulos de rotas
@@ -27,6 +28,10 @@ import aiTriageRoutes from './routes/ai-triage';
 import notificationsRoutes from './routes/notifications';
 
 export async function buildServer(): Promise<FastifyInstance> {
+  // Falha no boot se os segredos não estiverem configurados
+  const jwtSecret = getJwtSecret();
+  getEncryptionKey();
+
   const fastify = Fastify({
     logger: {
       level: process.env['NODE_ENV'] === 'production' ? 'warn' : 'info',
@@ -76,8 +81,9 @@ export async function buildServer(): Promise<FastifyInstance> {
 
   // ── Autenticação JWT ───────────────────────────────────────────────────────
   await fastify.register(fastifyJwt, {
-    secret: process.env['JWT_SECRET'] ?? 'REPLACE_IN_PRODUCTION',
-    sign: { expiresIn: '15m' },
+    secret: jwtSecret,
+    sign: { algorithm: 'HS256' },
+    verify: { algorithms: ['HS256'] },
   });
 
   // ── Plugins customizados ───────────────────────────────────────────────────

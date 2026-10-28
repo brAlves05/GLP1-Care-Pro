@@ -24,8 +24,8 @@ const ConsultationRecordSchema = z.object({
   diagnosis: z
     .array(z.object({ cid: z.string(), description: z.string() }))
     .default([]),
-  prescriptionChanges: z.record(z.unknown()).optional(),
-  labResults: z.record(z.unknown()).optional(),
+  prescriptionChanges: z.record(z.string(), z.json()).optional(),
+  labResults: z.record(z.string(), z.json()).optional(),
   nextAppointmentDate: z.string().date().optional(),
 });
 
@@ -44,7 +44,7 @@ export default async function appointmentsRoutes(fastify: FastifyInstance): Prom
    */
   fastify.post(
     '/',
-    { preHandler: [fastify.authenticate, fastify.requireRole(Role.DOCTOR), fastify.requireMfa] },
+    { preHandler: [fastify.authenticate, fastify.requireRole(Role.DOCTOR)] },
     async (request, reply) => {
       const body = CreateAppointmentSchema.parse(request.body);
 
@@ -84,7 +84,7 @@ export default async function appointmentsRoutes(fastify: FastifyInstance): Prom
    */
   fastify.get(
     '/',
-    { preHandler: [fastify.authenticate, fastify.requireMfa] },
+    { preHandler: [fastify.authenticate] },
     async (request, reply) => {
       const query = AppointmentQuerySchema.parse(request.query);
 
@@ -129,7 +129,7 @@ export default async function appointmentsRoutes(fastify: FastifyInstance): Prom
    */
   fastify.post(
     '/:id/record',
-    { preHandler: [fastify.authenticate, fastify.requireRole(Role.DOCTOR), fastify.requireMfa] },
+    { preHandler: [fastify.authenticate, fastify.requireRole(Role.DOCTOR)] },
     async (request, reply) => {
       const { id } = request.params as { id: string };
       const body = ConsultationRecordSchema.parse(request.body);
@@ -153,11 +153,11 @@ export default async function appointmentsRoutes(fastify: FastifyInstance): Prom
             doctorProfileId: appointment.doctorProfileId,
             patientProfileId: appointment.patientProfileId,
             weightKg: body.weightKg ?? null,
-            bloodPressure: body.bloodPressure ?? null,
+            bloodPressure: body.bloodPressure,
             symptoms: body.symptoms,
             diagnosis: body.diagnosis,
-            prescriptionChanges: body.prescriptionChanges ?? null,
-            labResults: body.labResults ?? null,
+            prescriptionChanges: body.prescriptionChanges,
+            labResults: body.labResults,
             nextAppointmentDate: body.nextAppointmentDate
               ? new Date(body.nextAppointmentDate)
               : null,
@@ -179,7 +179,7 @@ export default async function appointmentsRoutes(fastify: FastifyInstance): Prom
    */
   fastify.get(
     '/:id/pre-report',
-    { preHandler: [fastify.authenticate, fastify.requireRole(Role.DOCTOR), fastify.requireMfa] },
+    { preHandler: [fastify.authenticate, fastify.requireRole(Role.DOCTOR)] },
     async (request, reply) => {
       const { id } = request.params as { id: string };
 
